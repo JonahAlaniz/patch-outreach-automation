@@ -51,12 +51,3 @@ Before: an analyst manually cross-references each machine against login logs, fi
 After: the analyst runs the macro against the new export, reviews the clean output table, and kicks off the flow. Each identified user gets a Teams card with a one-click scheduling link; the flow tracks who was successfully messaged versus who failed (bad data, missing user, delivery failure) and emails the analyst a recap the moment the run finishes.
 
 The actual leverage point: the attribution step. Anyone can send a mail merge — the harder problem was reliably figuring out who to send it to from raw, noisy login data, without pinging the wrong person or an IT tech's account.
-
-Tools Used
-Tool	Purpose
-Vulnerability management platform	Source export of assets missing security patches
-Excel VBA	User attribution from login logs, campaign dedup/merge
-Microsoft Power Automate	Orchestration — read data, message users, track outcomes
-Microsoft Teams (Adaptive Cards)	Self-service outreach to end users
-Microsoft Bookings	Self-service patch appointment scheduling
-Office Scripts (TypeScript)	Planned workaround for a Power Automate connector bug
