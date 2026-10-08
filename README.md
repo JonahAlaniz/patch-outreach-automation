@@ -1,53 +1,90 @@
-# patch-outreach-automation
+# Home SOC Analyst Lab
 
-Vulnerability Remediation Outreach Pipeline
+A self-built home lab simulating a SOC analyst environment: a Wazuh SIEM ingesting Sysmon telemetry from a Windows endpoint, with Atomic Red Team-generated attacks for real, MITRE ATT&CK-mapped alert triage practice.
 
-An automated pipeline that closes the loop between a vulnerability scanner's patch-gap report and an actual patched machine — built during a cybersecurity internship at a healthcare-sector organization to replace hours of manual triage-and-contact work with a few clicks.
+**Goal:** hands-on experience with the tools and workflows a SOC analyst uses day to day — log ingestion, detection rules, and alert triage — built from scratch on consumer hardware (16GB RAM laptop).
 
-Goal: eliminate the manual bottleneck between "here's a list of vulnerable machines" and "the right person actually got contacted and booked a fix" — end-to-end, with accountability at every step.
+---
 
-Architecture
-Vulnerability Scanner   →   VBA Macro         →   Deduplicated      →   Power Automate   →   Teams Adaptive Card   →   Recap Email
-   CSV Export                (identifies           Campaign List         Flow (send +          + Bookings Link          (sent/failed
- (assets missing              primary user                                track outcomes)        (self-service            tally to
-  security patches)           from login logs)                                                     scheduling)             analyst)
+## Architecture
 
-Stack:
+```
+Atomic Red Team  →  Sysmon  →  Wazuh Agent  →  Wazuh Manager  →  Dashboard / Alerts  →  Analyst Triage
+ (simulates an       (logs        (forwards        (applies          (MITRE-mapped        (pivot to raw
+  attack technique)   activity)    to manager)       rules)            alerts surface)      logs, verdict)
+```
 
-Source data: Vulnerability management platform export (list of assets with missing Windows security patches)
-User attribution: Excel VBA macro parsing raw Windows login event logs
-Dedup / merge: custom VBA tool for combining multi-month campaign lists into one contact list
-Orchestration: Microsoft Power Automate
-Delivery: Microsoft Teams Adaptive Cards, sent via the Flow bot
-Scheduling: Microsoft Bookings
-What This Demonstrates
-Designing a user-attribution algorithm — most-frequent-logged-in-user over a rolling 90-day window, built and validated against real login logs, rather than a naive "who logged in last" approach that misattributes machines to IT staff doing rotations or reimages
-Handling messy real-world data: excluding service/technician accounts, deduplicating people who span multiple monthly reporting cycles, and rolling up multiple machines under one contact instead of sending duplicate outreach
-Building a multi-platform automated workflow (Excel → Power Automate → Teams → Bookings) with explicit success/failure tracking rather than a fire-and-forget script
-Debugging platform-level quirks — connector bugs, permission limitations, and undocumented trigger behavior — rather than just wiring together a happy-path demo
-Scoping work like a stakeholder-facing engineer: writing a problem/success-criteria/scope brief and getting sign-off before building, and keeping incomplete components out of presentation-facing summaries
-Build Notes & Troubleshooting
+**Environment:**
+- **Host:** 16GB RAM laptop, VirtualBox
+- **Wazuh manager:** Ubuntu Server 22.04 VM (indexer + manager + dashboard, all-in-one install)
+- **Victim endpoint:** Windows 10 VM running Sysmon (SwiftOnSecurity config) + Wazuh agent
+- **Attack simulation:** Atomic Red Team (Red Canary), run locally on the Windows VM
+- **Networking:** VirtualBox Host-Only Adapter (VM-to-VM/manager traffic) + NAT (internet access) — chosen after Bridged mode proved unreliable over Wi-Fi
 
-A few of the harder problems along the way — these were more instructive than the parts that just worked on the first try:
+---
 
-"Last login" is the wrong attribution signal. Early versions attributed each machine to whoever logged in most recently. In practice this frequently pointed at IT staff who'd touched the machine for an unrelated reason, not the actual owner. Fixed by switching to a most-frequent-user calculation over a rolling 90-day window — validated by reproducing the logic in Python against real log exports before trusting it in production.
+## What This Demonstrates
 
-Duplicate outreach across reporting cycles. The scanner exports one list per campaign, so a person whose machine appeared in two consecutive months' reports would get messaged twice. Solved with a dedicated merge tool that combines selected campaign sheets, deduplicates on username, and rolls multiple machine names into a single comma-separated field per person.
+- Deploying and configuring a SIEM (Wazuh) from scratch, including indexer/manager/dashboard components
+- Configuring endpoint telemetry (Sysmon) with an industry-standard ruleset
+- Wiring an agent's log collection to a specific Windows Event Log channel
+- Generating realistic attack activity safely with an industry-standard tool (Atomic Red Team)
+- Reading raw Sysmon/Wazuh event data and applying a structured triage framework:
+  1. What fired, and why (rule description + severity)
+  2. What actually happened (process, parent process, command line, target file)
+  3. Is the source legitimate (signed binary, expected location)
+  4. Does it match known/expected activity
+  5. Does the MITRE ATT&CK mapping actually fit the evidence
+  6. Verdict: true positive / false positive / benign-but-noteworthy / needs more data
+- Real infrastructure troubleshooting under pressure (see below) — networking, OS-level config, and resource management, not just following a tutorial
 
-Teams won't send 1:1 messages "as the user." Sending an Adaptive Card as the signed-in user (rather than the automation's bot identity) returns a hard BadRequest — Microsoft doesn't support that send path for 1:1 DMs. Fixed by sending all cards as the Flow bot instead.
+---
 
-Excel Online connector silently fails to render table columns. A separate booking-tracker flow needed to write rows into an Excel table, but the standard "Add a row into a table" connector refused to render the table's column fields for certain workbook/table states — a confirmed platform bug, not a config error, after six different diagnostic attempts. Workaround in progress: replacing that connector action with an Office Scripts function instead.
+## Build Notes & Troubleshooting
 
-Trigger data doesn't match its documented shape. The Outlook "event created" trigger was expected to return meeting attendees as a structured array; it actually returns a semicolon-delimited string, and self-booking test events don't reliably surface the booker's email in the attendee fields at all. Real (non-self) test bookings are needed to confirm the actual data shape before the extraction logic can be finished.
+A few of the more instructive problems hit along the way — included because working through them was as valuable as the end result:
 
-Power Automate manual triggers can't query live data for a dropdown. Wanted a dropdown of valid campaign names pulled live from the spreadsheet; manual triggers don't support that natively. Resolved by using a static, manually-maintained dropdown instead of fighting the platform.
+**Wi-Fi + VirtualBox Bridged networking don't mix.** VMs on Bridged mode couldn't obtain an IPv4 address over Wi-Fi (a common VirtualBox limitation — the virtual MAC address often can't complete DHCP over a Wi-Fi adapter). Solution: Host-Only Adapter (VM-to-VM/host traffic) + NAT (internet access) on both VMs instead.
 
-Sample Run
+**Wazuh indexer failed to initialize (`vm.max_map_count` too low).** OpenSearch, which powers the Wazuh indexer, requires a higher OS-level limit on memory-mapped regions than Ubuntu ships with by default. Fixed with `sudo sysctl -w vm.max_map_count=262144`, made persistent via `/etc/sysctl.conf`.
 
-Scenario: monthly patch-gap export flagging ~40–75 assets as missing a critical Windows security update.
+**Sysmon events weren't reaching Wazuh.** The agent's `ossec.conf` pointed at `Microsoft-Windows-Sysmon\Operational` (backslash) instead of the actual channel name, `Microsoft-Windows-Sysmon/Operational` (forward slash). Diagnosed by confirming Sysmon was logging locally (`Get-WinEvent`) while Wazuh showed nothing — isolating the break to the agent's channel config specifically.
 
-Before: an analyst manually cross-references each machine against login logs, figures out who to contact, and sends individual messages — realistically a multi-hour task, done by hand, with no record of who was or wasn't reached.
+**Windows VM account lacked Administrator rights**, discovered via `net user <username>` showing empty group membership. Traced to the account-creation flow during a Windows evaluation ISO setup; resolved with a clean reinstall using the offline/personal-use account path.
 
-After: the analyst runs the macro against the new export, reviews the clean output table, and kicks off the flow. Each identified user gets a Teams card with a one-click scheduling link; the flow tracks who was successfully messaged versus who failed (bad data, missing user, delivery failure) and emails the analyst a recap the moment the run finishes.
+**Disk filled to 100%, crashing the indexer and manager.** Root cause: `/var/ossec/queue/vd_updater/tmp/contents` (Wazuh's vulnerability-detection feed updater) had ballooned to 16GB of uncleaned temporary data, likely from an interrupted update. Diagnosed with `du -h --max-depth=N`, drilling down level by level from `/` to the actual offending folder. Resolved by clearing the temp directory; Wazuh regenerates it safely on the next update cycle.
 
-The actual leverage point: the attribution step. Anyone can send a mail merge — the harder problem was reliably figuring out who to send it to from raw, noisy login data, without pinging the wrong person or an IT tech's account.
+---
+
+## Sample Triage Write-Up
+
+**Alert:** `Executable file dropped in folder commonly used by malware` (Level 15)
+
+**What fired:** `cleanmgr.exe` (Windows' built-in Disk Cleanup utility) created `WimProvider.dll` inside a randomly-named GUID folder under `%TEMP%`.
+
+**Investigation:** This exact process/file/path combination is well-documented as routine Disk Cleanup behavior. However, the same pattern — `cleanmgr.exe` dropping a DLL into a predictable temp path — is also a documented historical UAC-bypass technique, which is why the rule fires at high severity regardless of intent.
+
+**Verdict:** False positive in this instance (known, deliberate lab activity; legitimate Microsoft binary; expected path). Noted as **benign-but-noteworthy** rather than dismissed outright — the underlying technique is real, so the rule's severity is appropriate to keep, even though this specific trigger wasn't malicious.
+
+*(This is the kind of ambiguous, evidence-based call that makes up most real SOC triage — not every alert resolves to a clean yes/no.)*
+
+---
+
+## What's Next
+
+- [ ] Expand Atomic Red Team coverage beyond Discovery/Execution (Credential Access, Persistence, Defense Evasion)
+- [ ] Add a Kali Linux attacker VM for manual, non-scripted attack practice
+- [ ] Tune detection rules based on triage findings
+- [ ] Practice triage on "quiet" baseline activity (no deliberate attacks) to build a sense of normal vs. anomalous
+
+---
+
+## Tools Used
+
+| Tool | Purpose |
+|---|---|
+| [Wazuh](https://wazuh.com/) | SIEM — log indexing, detection rules, dashboard |
+| [Sysmon](https://learn.microsoft.com/en-us/sysinternals/downloads/sysmon) | Endpoint telemetry (process, file, network events) |
+| [SwiftOnSecurity's Sysmon config](https://github.com/SwiftOnSecurity/sysmon-config) | Community-standard Sysmon ruleset |
+| [Atomic Red Team](https://github.com/redcanaryco/atomic-red-team) | Safe, realistic attack technique simulation |
+| VirtualBox | Hypervisor |
